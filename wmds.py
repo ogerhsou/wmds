@@ -17,11 +17,13 @@ import numpy as np
 import random
 from sklearn import manifold
 from sklearn.metrics import euclidean_distances
+
+import json
 import sys
 
 
 class V2PI:
-    def __init__(self, points_num, ori_dim, map_dim, dist_method="euclidean"):
+    def __init__(self, points_num, ori_dim, map_dim, dist_method="euclidean", X_true=None, pos=None):
         if dist_method == "euclidean":
             self.dist_pair_func = self.pair_euclidean_distance
             self.dist_func = self.euclidean_distance
@@ -42,14 +44,20 @@ class V2PI:
         self.main_loss = 50000000
         self.total_loss = 50000000
 
-        self.X_true = np.zeros((points_num, ori_dim))
-        self.pos = np.zeros((points_num, map_dim))
         self.X_dist = np.zeros((points_num, points_num, ori_dim))
         self.Z_dist = np.zeros((points_num, points_num))
         self.Z_sum = 0.0
 
-        self.read_matrix(self.X_true, "data/demo_X.csv")
-        self.X_true -= self.X_true.mean()
+        if X_true is not None:
+            self.X_true = X_true
+        else:
+            self.X_true = np.zeros((points_num, ori_dim))
+            self.read_matrix(self.X_true, "data/demo_X.csv")
+            self.X_true -= self.X_true.mean()
+        if pos is not None:
+            self.pos = pos
+        else:
+            self.pos = np.zeros((points_num, map_dim))
 
     def read_matrix(self, X, fname):
         f = open(fname, 'r')
@@ -159,10 +167,10 @@ class V2PI:
         return loss
 
     def update_w(self):
-        w = [1.0 / np.shape(self.X_true)[1]] * np.shape(self.X_true)[1]
-        # w = [random.uniform(0,1) for i in range(np.shape(self.X_true)[1])]
-        # sum_w = sum(w)
-        # w = [i/sum_w for i in w]
+        # w = [1.0 / np.shape(self.X_true)[1]] * np.shape(self.X_true)[1]
+        w = [random.uniform(0,1) for i in range(np.shape(self.X_true)[1])]
+        sum_w = sum(w)
+        w = [i/sum_w for i in w]
         w = np.array(w)
         loss = self.f_loss(w)
         print "ori_main_loss: " + str(self.main_loss)
@@ -200,7 +208,7 @@ class V2PI:
 
     def run(self):
         self.cal_X_dist()
-        self.read_matrix(self.pos, "data/Z_euclidean.csv")
+        # self.read_matrix(self.pos, "data/Z_euclidean.csv")
         # self.read_matrix(self.pos, "data/Z_canberra.csv")
         # self.cal_pos_by_mds()
         # Rescale the data
@@ -208,11 +216,59 @@ class V2PI:
         self.cal_Z_dist()
         self.update_w()
 
+def read_matrix(X, fname):
+    f = open(fname, 'r')
+    x = 0
+    for line in f:
+        line = line.strip().split(',')
+        for y in range(len(line)):
+            X[x][y] = line[y]
+        x += 1
+
+def init_matrix():
+    user_pos_dict = {}
+    user_pos_dict['positions'] = []
+    user_pos_dict['user_id'] = []
+    user_set = set()
+    # with open("data/pos_v2pi_bak.json", "r") as fs:
+    with open("data/demo_pos30.json", "r") as fs:
+        changing_data = json.load(fs)
+        # for k, v in changing_data.items():
+        #     for pos, user in zip(v['positions'], v['user_id']):
+        #         if user in user_set:
+        #             continue
+        #         user_set.add(user)
+        #         user_pos_dict['positions'].append(pos)
+        #         user_pos_dict['user_id'].append(user)
+        for pos, user in zip(changing_data['positions'], changing_data['user_id']):
+            if user in user_set:
+                continue
+            user_set.add(user)
+            user_pos_dict['positions'].append(pos)
+            user_pos_dict['user_id'].append(user)
+
+    X = np.zeros((30, 9))
+    read_matrix(X, "data/demo_X.csv")
+    X_new = np.zeros((len(user_set), 9))
+    Z_new = np.zeros((len(user_set), 2))
+
+    sub = 0
+    for pos, user in zip(user_pos_dict['positions'], user_pos_dict['user_id']):
+        X_new[sub] = X[int(user)]
+        Z_new[sub] = pos
+        sub += 1
+
+    # X_new -= X_new.mean()
+    return X_new, Z_new
+
 def main():
     #point_num, original_dim, new_dim, method
     # v2pi = V2PI(30, 9, 2, "canberra")
-    v2pi = V2PI(30, 9, 2, "euclidean")
+    # v2pi = V2PI(30, 9, 2)
+    X, pos = init_matrix()
+    v2pi = V2PI(np.shape(X)[0], 9, 2, "euclidean", X, pos)
     v2pi.run()
+
 
 if __name__ == '__main__':
     main()
