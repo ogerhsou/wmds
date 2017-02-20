@@ -21,9 +21,13 @@ from sklearn.metrics import euclidean_distances
 import json
 import sys
 
+ori_data_num = 30
+ori_data_dim = 9
+ori_data_path = "data/demo_X.csv"
+new_data_dim = 2
 
 class V2PI:
-    def __init__(self, points_num, ori_dim, map_dim, dist_method="euclidean", X_true=None, pos=None):
+    def __init__(self, points_num, ori_dim, map_dim, dist_method="euclidean", X_true=None, Z=None):
         if dist_method == "euclidean":
             self.dist_pair_func = self.pair_euclidean_distance
             self.dist_func = self.euclidean_distance
@@ -44,6 +48,10 @@ class V2PI:
         self.main_loss = 50000000
         self.total_loss = 50000000
 
+        self.points_num = points_num
+        self.ori_dim = ori_dim
+        self.map_dim = map_dim
+
         self.X_dist = np.zeros((points_num, points_num, ori_dim))
         self.Z_dist = np.zeros((points_num, points_num))
         self.Z_sum = 0.0
@@ -52,12 +60,12 @@ class V2PI:
             self.X_true = X_true
         else:
             self.X_true = np.zeros((points_num, ori_dim))
-            self.read_matrix(self.X_true, "data/demo_X.csv")
+            self.read_matrix(self.X_true, ori_data_path)
             self.X_true -= self.X_true.mean()
-        if pos is not None:
-            self.pos = pos
+        if Z is not None:
+            self.Z = Z
         else:
-            self.pos = np.zeros((points_num, map_dim))
+            self.Z = np.zeros((points_num, map_dim))
 
     def read_matrix(self, X, fname):
         f = open(fname, 'r')
@@ -88,28 +96,28 @@ class V2PI:
         return self.weighting_dist(i, j, w)
         # return np.shape(self.X_true)[1] * self.weighting_dist(i, j, w)
 
-    def cal_pos_by_mds(self):
+    def cal_Z_by_mds(self, w):
         seed = np.random.RandomState(seed=3)
         if self.dist_func == self.euclidean_distance:
             similarities = np.zeros((np.shape(self.X_true)[0], np.shape(self.X_true)[0]))
             for i in range(np.shape(similarities)[0]):
                 for j in range(i + 1, np.shape(similarities)[1]):
-                    similarities[i][j] = np.sqrt(sum(self.X_dist[i][j] / np.shape(self.X_true)[1]))
-                    similarities[j][i] = np.sqrt(sum(self.X_dist[i][j] / np.shape(self.X_true)[1]))
+                    similarities[i][j] = np.sqrt(max(sum(self.X_dist[i][j] * w),0))
+                    similarities[j][i] = np.sqrt(max(sum(self.X_dist[i][j] * w),0))
             # similarities = euclidean_distances(self.X_true)
         elif self.dist_func == self.canberra_distance:
             similarities = np.zeros((np.shape(self.X_true)[0], np.shape(self.X_true)[0]))
             for i in range(np.shape(similarities)[0]):
                 for j in range(i + 1, np.shape(similarities)[1]):
-                    similarities[i][j] = sum(self.X_dist[i][j] / np.shape(self.X_true)[1])
-                    similarities[j][i] = sum(self.X_dist[i][j] / np.shape(self.X_true)[1])
+                    similarities[i][j] = sum(self.X_dist[i][j] * w)
+                    similarities[j][i] = sum(self.X_dist[i][j] * w)
         else:
             print "Wrong distance method!"
             sys.exit(-1)
 
         mds = manifold.MDS(n_components=2, max_iter=3000, eps=1e-9, random_state=seed,
                            dissimilarity="precomputed", n_jobs=1)
-        self.pos = mds.fit(similarities).embedding_
+        self.Z = mds.fit(similarities).embedding_
 
     def cal_X_dist(self):
         for i in range(np.shape(self.X_true)[0]):
@@ -121,7 +129,7 @@ class V2PI:
         for i in range(np.shape(self.Z_dist)[0]):
             for j in range(i + 1, np.shape(self.Z_dist)[0]):
                 # Defined distance of project point pair z_i,z_j
-                self.Z_dist[i][j] = np.linalg.norm(self.pos[i] - self.pos[j])
+                self.Z_dist[i][j] = np.linalg.norm(self.Z[i] - self.Z[j])
                 self.Z_sum += (self.Z_dist[i][j] ** 2)
 
     def gradient(self, w):
@@ -166,12 +174,12 @@ class V2PI:
         loss = self.main_loss + self.c_sum * ((sum(w) - 1) ** 2) + self.c_w * (sum([max(0, -i) ** 2 for i in w]))
         return loss
 
-    def update_w(self):
+    def update_w(self, w):
         # w = [1.0 / np.shape(self.X_true)[1]] * np.shape(self.X_true)[1]
-        w = [random.uniform(0,1) for i in range(np.shape(self.X_true)[1])]
-        sum_w = sum(w)
-        w = [i/sum_w for i in w]
-        w = np.array(w)
+        # w = [random.uniform(0,1) for i in range(np.shape(self.X_true)[1])]
+        # sum_w = sum(w)
+        # w = [i/sum_w for i in w]
+        # w = np.array(w)
         loss = self.f_loss(w)
         print "ori_main_loss: " + str(self.main_loss)
         print "ori_total_loss: " + str(loss)
@@ -185,7 +193,14 @@ class V2PI:
             # step of gradient descent
 
             new_loss = self.f_loss(w - step * grad)
+            equal_flag = False
             while new_loss >= loss - self.alpha * step * sum(grad ** 2):
+                if equal_flag == True:
+                    break
+                if new_loss == loss - self.alpha * step * sum(grad ** 2):
+                    equal_flag = True
+                else:
+                    equal_flag = False
                 step *= self.beta
                 new_loss = self.f_loss(w - step * grad)
 
@@ -205,16 +220,7 @@ class V2PI:
         print "final stress: " + str(self.f_stress())
         print "final sum_w: %s" % (sum(w))
 
-
-    def run(self):
-        self.cal_X_dist()
-        # self.read_matrix(self.pos, "data/Z_euclidean.csv")
-        # self.read_matrix(self.pos, "data/Z_canberra.csv")
-        # self.cal_pos_by_mds()
-        # Rescale the data
-        # self.pos *= np.sqrt((self.X_true ** 2).sum()) / np.sqrt((self.pos ** 2).sum())
-        self.cal_Z_dist()
-        self.update_w()
+        return w
 
 def read_matrix(X, fname):
     f = open(fname, 'r')
@@ -225,32 +231,25 @@ def read_matrix(X, fname):
             X[x][y] = line[y]
         x += 1
 
-def init_matrix():
+def init_matrix(ori_data_num, ori_data_dim, new_data_dim):
     user_pos_dict = {}
     user_pos_dict['positions'] = []
     user_pos_dict['user_id'] = []
     user_set = set()
-    # with open("data/pos_v2pi_bak.json", "r") as fs:
-    with open("data/demo_pos30.json", "r") as fs:
+    with open("data/pos_v2pi.json", "r") as fs:
         changing_data = json.load(fs)
-        # for k, v in changing_data.items():
-        #     for pos, user in zip(v['positions'], v['user_id']):
-        #         if user in user_set:
-        #             continue
-        #         user_set.add(user)
-        #         user_pos_dict['positions'].append(pos)
-        #         user_pos_dict['user_id'].append(user)
-        for pos, user in zip(changing_data['positions'], changing_data['user_id']):
-            if user in user_set:
-                continue
-            user_set.add(user)
-            user_pos_dict['positions'].append(pos)
-            user_pos_dict['user_id'].append(user)
+        for k, v in changing_data.items():
+            for pos, user in zip(v['positions'], v['user_id']):
+                if user in user_set:
+                    continue
+                user_set.add(user)
+                user_pos_dict['positions'].append(pos)
+                user_pos_dict['user_id'].append(user)
 
-    X = np.zeros((30, 9))
-    read_matrix(X, "data/demo_X.csv")
-    X_new = np.zeros((len(user_set), 9))
-    Z_new = np.zeros((len(user_set), 2))
+    X = np.zeros((ori_data_num, ori_data_dim))
+    read_matrix(X, ori_data_path)
+    X_new = np.zeros((len(user_set), ori_data_dim))
+    Z_new = np.zeros((len(user_set), new_data_dim))
 
     sub = 0
     for pos, user in zip(user_pos_dict['positions'], user_pos_dict['user_id']):
@@ -258,16 +257,49 @@ def init_matrix():
         Z_new[sub] = pos
         sub += 1
 
-    # X_new -= X_new.mean()
+    X_new -= X_new.mean()
     return X_new, Z_new
+
+
+def run(v2pi):
+    v2pi.cal_X_dist()
+    # self.read_matrix(self.Z, "data/Z_euclidean.csv")
+    # self.read_matrix(self.Z, "data/Z_canberra.csv")
+    w = [1.0 / np.shape(v2pi.X_true)[1]] * np.shape(v2pi.X_true)[1]
+    # w = [random.uniform(0,1) for i in range(np.shape(v2pi.X_true)[1])]
+    # sum_w = sum(w)
+    # w = [i/sum_w for i in w]
+    w = np.array(w)
+
+    # v2pi.cal_Z_by_mds(w)
+    # Rescale the data
+    # v2pi.Z *= np.sqrt((v2pi.X_true ** 2).sum()) / np.sqrt((v2pi.Z ** 2).sum())
+    v2pi.cal_Z_dist()
+    w = v2pi.update_w(w)
+
+    #cal mds by calculated w
+    v2pi_new = V2PI(ori_data_num, ori_data_dim, new_data_dim)
+    v2pi_new.cal_X_dist()
+    v2pi_new.cal_Z_by_mds(w)
+    print v2pi_new.Z
+    point_dict = {}
+    point_dict['positions'] = []
+    point_dict['user_id'] = []
+
+    for i in range(len(v2pi_new.Z)):
+        point_dict['user_id'].append(i)
+        point_dict['positions'].append(list(v2pi_new.Z[i]))
+
+    with open("data/demo_pos_reset.json", 'w') as fs:
+        json.dump(point_dict, fs)
 
 def main():
     #point_num, original_dim, new_dim, method
+    X, Z = init_matrix(ori_data_num, ori_data_dim, new_data_dim)
     # v2pi = V2PI(30, 9, 2, "canberra")
     # v2pi = V2PI(30, 9, 2)
-    X, pos = init_matrix()
-    v2pi = V2PI(np.shape(X)[0], 9, 2, "euclidean", X, pos)
-    v2pi.run()
+    v2pi = V2PI(np.shape(X)[0], ori_data_dim, new_data_dim, "euclidean", X, Z)
+    run(v2pi)
 
 
 if __name__ == '__main__':
